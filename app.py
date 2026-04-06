@@ -108,7 +108,7 @@ async def chat_stream(request: Request):
             try:
                 # Primera llamada al modelo (con streaming para ver el razonamiento)
                 stream = client.chat.completions.create(
-                    model="MiniMax-M2",
+                    model="MiniMax-M2.7",
                     messages=messages,
                     tools=tools,
                     extra_body={"reasoning_split": True},
