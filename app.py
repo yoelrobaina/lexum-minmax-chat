@@ -11,7 +11,7 @@ from typing import List, Dict
 
 app = FastAPI()
 
-# 配置CORS
+# Configurar CORS (permite peticiones desde cualquier origen)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,29 +20,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 挂载静态文件目录
+# Montar el directorio de archivos estáticos (HTML, CSS, JS)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# 配置OpenAI客户端连接到MiniMax
+# Configurar el cliente de OpenAI para que use la API de MiniMax
 api_key = os.getenv("MINIMAX_API_KEY")
 client = OpenAI(
-    base_url="https://api.minimaxi.com/v1",
+    base_url="https://api.minimax.io/v1",  # Cambiado de .com a .io
     api_key=api_key
 )
 
-# 定义工具：天气查询
+# Definir una herramienta de ejemplo: consulta del clima
 tools = [
     {
         "type": "function",
         "function": {
             "name": "get_weather",
-            "description": "获取指定城市的实时天气信息，包括温度、天气状况、湿度等。用户需要先提供一个城市名称。",
+            "description": "Obtiene el clima actual de una ciudad. El usuario debe proporcionar el nombre de la ciudad.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "location": {
                         "type": "string",
-                        "description": "城市名称，例如：北京、上海、San Francisco 等"
+                        "description": "Nombre de la ciudad, por ejemplo: La Habana, Madrid, Ciudad de México"
                     }
                 },
                 "required": ["location"]
@@ -51,14 +51,13 @@ tools = [
     }
 ]
 
-
 async def get_weather(location: str) -> str:
     """
-    调用wttr.in免费天气API获取实时天气
-    参数：
-        location: 城市名称
-    返回：
-        天气信息的JSON字符串
+    Llama a la API gratuita de clima wttr.in para obtener el clima actual.
+    Parámetro:
+        location: nombre de la ciudad
+    Retorna:
+        Cadena JSON con la información del clima
     """
     try:
         async with httpx.AsyncClient() as client_http:
@@ -84,34 +83,30 @@ async def get_weather(location: str) -> str:
                 
                 return json.dumps(weather_info, ensure_ascii=False)
             else:
-                return json.dumps({"error": f"无法获取{location}的天气信息"}, ensure_ascii=False)
+                return json.dumps({"error": f"No se pudo obtener el clima de {location}"}, ensure_ascii=False)
                 
     except Exception as e:
-        return json.dumps({"error": f"天气查询失败: {str(e)}"}, ensure_ascii=False)
-
+        return json.dumps({"error": f"Error al consultar el clima: {str(e)}"}, ensure_ascii=False)
 
 @app.get("/")
 async def read_root():
-    """重定向到静态页面"""
+    """Redirige a la página principal (interfaz de chat)"""
     from fastapi.responses import FileResponse
     return FileResponse("static/index.html")
 
-
 @app.post("/api/chat/stream")
 async def chat_stream(request: Request):
-    """流式聊天接口（支持工具调用）"""
+    """API de chat en streaming (soporta llamadas a herramientas como el clima)"""
     try:
-        # 解析请求体
         body = await request.json()
         messages = body.get("messages", [])
         
         if not messages:
-            return {"error": "messages字段不能为空"}
+            return {"error": "El campo 'messages' no puede estar vacío"}
         
-        # 创建流式生成器
         async def generate():
             try:
-                # 第一轮：调用模型（使用流式以实时返回思考过程）
+                # Primera llamada al modelo (con streaming para ver el razonamiento)
                 stream = client.chat.completions.create(
                     model="MiniMax-M2",
                     messages=messages,
@@ -120,19 +115,18 @@ async def chat_stream(request: Request):
                     stream=True,
                 )
                 
-                # 收集完整的响应消息（用于检测tool_calls）
                 full_content = ""
                 tool_calls_list = []
                 reasoning_content = []
                 
-                # 处理第一轮流式响应
+                # Procesar la respuesta en streaming
                 for chunk in stream:
                     try:
                         delta = chunk.choices[0].delta
                     except Exception:
                         continue
                     
-                    # 实时发送思考过程
+                    # Enviar el razonamiento (thinking) en tiempo real
                     rd = getattr(delta, "reasoning_details", None)
                     if rd:
                         for detail in rd:
@@ -142,16 +136,15 @@ async def chat_stream(request: Request):
                                 yield f"data: {data}\n\n"
                                 await asyncio.sleep(0.01)
                     
-                    # 收集内容（暂不发送，等确认是否有工具调用）
+                    # Acumular el contenido por si hay que usarlo después
                     content_fragment = getattr(delta, "content", None)
                     if content_fragment:
                         full_content += content_fragment
                     
-                    # 收集工具调用信息
+                    # Acumular llamadas a herramientas (tool calls)
                     tool_calls = getattr(delta, "tool_calls", None)
                     if tool_calls:
                         for tc in tool_calls:
-                            # 查找或创建对应的tool_call
                             idx = tc.index if hasattr(tc, "index") else 0
                             while len(tool_calls_list) <= idx:
                                 tool_calls_list.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
@@ -164,23 +157,23 @@ async def chat_stream(request: Request):
                                 if hasattr(tc.function, "arguments") and tc.function.arguments:
                                     tool_calls_list[idx]["function"]["arguments"] += tc.function.arguments
                 
-                # 检查是否有工具调用
+                # Si hay herramientas que ejecutar...
                 if tool_calls_list:
-                    # 发送工具调用信息
+                    # Notificar al usuario que se está usando una herramienta
                     for tool_call in tool_calls_list:
-                        tool_info = f"🔧 正在调用工具: {tool_call['function']['name']}\n"
+                        tool_info = f"🔧 Ejecutando herramienta: {tool_call['function']['name']}\n"
                         data = json.dumps({"type": "content", "content": tool_info}, ensure_ascii=False)
                         yield f"data: {data}\n\n"
                         await asyncio.sleep(0.01)
                     
-                    # 将完整的assistant响应添加到消息历史
+                    # Añadir la respuesta del asistente al historial
                     messages.append({
                         "role": "assistant",
                         "content": full_content or None,
                         "tool_calls": tool_calls_list
                     })
                     
-                    # 执行工具调用
+                    # Ejecutar cada herramienta
                     for tool_call in tool_calls_list:
                         function_name = tool_call['function']['name']
                         function_args = json.loads(tool_call['function']['arguments'])
@@ -189,20 +182,20 @@ async def chat_stream(request: Request):
                             location = function_args.get("location")
                             tool_result = await get_weather(location)
                             
-                            # 发送工具执行结果信息
-                            result_info = f"📊 获取到{location}的天气信息\n"
+                            # Mostrar que se obtuvo el resultado
+                            result_info = f"📊 Clima obtenido para {location}\n"
                             data = json.dumps({"type": "content", "content": result_info}, ensure_ascii=False)
                             yield f"data: {data}\n\n"
                             await asyncio.sleep(0.01)
                             
-                            # 添加工具结果到消息历史
+                            # Añadir el resultado de la herramienta al historial
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tool_call['id'],
                                 "content": tool_result
                             })
                     
-                    # 第二轮：使用流式获取最终回复
+                    # Segunda llamada al modelo (con el resultado de la herramienta) para dar la respuesta final
                     stream = client.chat.completions.create(
                         model="MiniMax-M2",
                         messages=messages,
@@ -211,14 +204,14 @@ async def chat_stream(request: Request):
                         stream=True,
                     )
                     
-                    # 处理流式响应
+                    # Procesar la respuesta final en streaming
                     for chunk in stream:
                         try:
                             delta = chunk.choices[0].delta
                         except Exception:
                             continue
                         
-                        # 处理思考过程
+                        # Razonamiento
                         rd = getattr(delta, "reasoning_details", None)
                         if rd:
                             for detail in rd:
@@ -227,7 +220,7 @@ async def chat_stream(request: Request):
                                     yield f"data: {data}\n\n"
                                     await asyncio.sleep(0.01)
                         
-                        # 处理响应内容
+                        # Contenido de la respuesta
                         content_fragment = getattr(delta, "content", None)
                         if content_fragment:
                             data = json.dumps({"type": "content", "content": content_fragment}, ensure_ascii=False)
@@ -235,9 +228,8 @@ async def chat_stream(request: Request):
                             await asyncio.sleep(0.01)
                 
                 else:
-                    # 没有工具调用，流式发送已收集的内容
+                    # Sin herramientas: enviar el contenido acumulado en fragmentos
                     if full_content:
-                        # 直接实时发送（在流式处理中其实已经可以发送了，这里分块发送）
                         chunk_size = 10
                         for i in range(0, len(full_content), chunk_size):
                             chunk_text = full_content[i:i+chunk_size]
@@ -245,11 +237,11 @@ async def chat_stream(request: Request):
                             yield f"data: {data}\n\n"
                             await asyncio.sleep(0.01)
                 
-                # 发送完成信号
+                # Señal de finalización
                 yield "data: [DONE]\n\n"
                 
             except Exception as e:
-                error_msg = f"错误: {str(e)}"
+                error_msg = f"Error: {str(e)}"
                 yield f"data: {error_msg}\n\n"
         
         return StreamingResponse(
@@ -265,18 +257,15 @@ async def chat_stream(request: Request):
     except Exception as e:
         return {"error": str(e)}
 
-
 @app.get("/api/health")
 async def health_check():
-    """健康检查接口"""
-    return {"status": "ok", "message": "MiniMax Chat服务运行中"}
-
+    """Verifica que el servicio esté funcionando"""
+    return {"status": "ok", "message": "Servicio de chat con MiniMax funcionando"}
 
 if __name__ == "__main__":
     import uvicorn
     print("=" * 60)
-    print("MiniMax Chat Web服务启动中...")
-    print("访问地址: http://localhost:8000")
+    print("Servicio de chat con MiniMax iniciado...")
+    print("Accede en: http://localhost:8000")
     print("=" * 60)
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
